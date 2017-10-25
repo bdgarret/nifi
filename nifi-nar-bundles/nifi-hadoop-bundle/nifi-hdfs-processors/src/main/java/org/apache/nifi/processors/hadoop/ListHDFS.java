@@ -134,6 +134,14 @@ public class ListHDFS extends AbstractHadoopProcessor {
         .addValidator(StandardValidators.createTimePeriodValidator(100, TimeUnit.MILLISECONDS, Long.MAX_VALUE, TimeUnit.NANOSECONDS))
         .build();
 
+    public static final PropertyDescriptor USE_GLOB_INSTEAD_OF_LIST = new PropertyDescriptor.Builder()
+        .name("Enable glob in the directory path")
+        .description("If true then use FileSystem.globStatus instead of listStatus")
+        .required(true)
+        .allowableValues("true", "false")
+        .defaultValue("false")
+        .build();
+    
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
         .name("success")
         .description("All FlowFiles are transferred to this relationship")
@@ -166,6 +174,7 @@ public class ListHDFS extends AbstractHadoopProcessor {
         props.add(FILE_FILTER);
         props.add(MIN_AGE);
         props.add(MAX_AGE);
+        props.add(USE_GLOB_INSTEAD_OF_LIST);
         return props;
     }
 
@@ -334,11 +343,12 @@ public class ListHDFS extends AbstractHadoopProcessor {
         // Pull in any file that is newer than the timestamp that we have.
         final FileSystem hdfs = getFileSystem();
         final boolean recursive = context.getProperty(RECURSE_SUBDIRS).asBoolean();
+        final boolean useGlobInsteadOfList = context.getProperty(USE_GLOB_INSTEAD_OF_LIST).asBoolean();
 
         final Set<FileStatus> statuses;
         try {
             final Path rootPath = new Path(directory);
-            statuses = getStatuses(rootPath, recursive, hdfs, createPathFilter(context));
+            statuses = getStatuses(rootPath, recursive, hdfs, createPathFilter(context), useGlobInsteadOfList);
             getLogger().debug("Found a total of {} files in HDFS", new Object[] {statuses.size()});
         } catch (final IOException | IllegalArgumentException e) {
             getLogger().error("Failed to perform listing of HDFS due to {}", new Object[] {e});
@@ -381,17 +391,22 @@ public class ListHDFS extends AbstractHadoopProcessor {
         }
     }
 
-    private Set<FileStatus> getStatuses(final Path path, final boolean recursive, final FileSystem hdfs, final PathFilter filter) throws IOException {
+    private Set<FileStatus> getStatuses(final Path path, final boolean recursive, final FileSystem hdfs, final PathFilter filter, boolean useGlobInsteadOfList) throws IOException {
         final Set<FileStatus> statusSet = new HashSet<>();
 
         getLogger().debug("Fetching listing for {}", new Object[] {path});
-        final FileStatus[] statuses = hdfs.listStatus(path, filter);
+        final FileStatus[] statuses;
+        if (useGlobInsteadOfList) {
+            statuses = hdfs.globStatus(path, filter);
+        } else {
+            statuses = hdfs.listStatus(path, filter);
+        }
 
         for ( final FileStatus status : statuses ) {
             if ( status.isDirectory() ) {
                 if ( recursive ) {
                     try {
-                        statusSet.addAll(getStatuses(status.getPath(), recursive, hdfs, filter));
+                        statusSet.addAll(getStatuses(status.getPath(), recursive, hdfs, filter, false));
                     } catch (final IOException ioe) {
                         getLogger().error("Failed to retrieve HDFS listing for subdirectory {} due to {}; will continue listing others", new Object[] {status.getPath(), ioe});
                     }
